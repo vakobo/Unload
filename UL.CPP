@@ -319,7 +319,7 @@ WORD	mcb2psp(WORD wMCB)
 void	UnloadDrivers()
 {
 	int	cul;
-	int	dc,i,j;
+	WORD	dc,i,j;
 	WORD	wLolOff;
 	WORD	wLolSeg;
 	WORD	wDrvMCB;
@@ -357,7 +357,7 @@ void	UnloadDrivers()
 //-		get number of devices controlled by DI1000DD.SYS
 		wDrvPSP	= mcb2psp(wDrvMCB);
 		lpDevHdr	= (LPDH)MK_FP(wDrvPSP, 0);
-		dc	= (int)lpDevHdr->abName[0];
+		dc	= (WORD)lpDevHdr->abName[0];
 		fprintf(stdout, "DI1000DD MCB=%04X PSP=%04X NoD=%d\n", wDrvMCB, wDrvPSP, dc);
 
 //-		decrement number of drives in BIOS Data Area
@@ -419,22 +419,41 @@ void	UnloadDrivers()
 		}
 		else
 		{
+			i	= 0;
+//-			Check 2.27x
 			lpIT	= (LPDWORD)MK_FP(wDrvPSP, 0x025A);
 			if(*lpIT == (DWORD)XMS)
 			{
-				FreeXmsHandles(*(LPWORD)MK_FP(wDrvPSP, 0x25E));
+				i	= 0x25E;
 			}
 			else
 			{
+//-				Check 2.27
 				lpIT	= (LPDWORD)MK_FP(wDrvPSP, 0x0298);
 				if(*lpIT == (DWORD)XMS)
 				{
-					FreeXmsHandles(*(LPWORD)MK_FP(wDrvPSP, 0x29C));
+					i	= 0x29C;
 				}
 				else
 				{
-					fprintf(stdout, "Unknown version. Can't free XMS handles!\n");
+//-					Check 2.20
+					lpIT	= (LPDWORD)MK_FP(wDrvPSP, 0x029A);
+					if(*lpIT == (DWORD)XMS)
+					{
+						i	= 0x29E;
+					}
 				}
+			}
+
+			if(i)
+			{
+				j	= *(LPWORD)MK_FP(wDrvPSP, i);
+				fprintf(stdout, " XMS handle found at %4.4X = %4.4X!\n", i, j);
+				FreeXmsHandles(j);
+			}
+			else
+			{
+				fprintf(stdout, " Unknown USBASPI version. Can't free XMS handles!\n");
 			}
 		}
 

@@ -220,7 +220,7 @@ void	LoadDrivers()
 		fprintf(stdout, "DEVLOAD DI1000DD.SYS OK\n");
 		break;
 	default:
-		fprintf(stderr, "DEVLOAD DI1000DD.SYS error=%d\n", rv);
+		fprintf(stderr, "DEVLOAD DI1000DD.SYS = %d\n", rv);
 	}
 }
 
@@ -496,9 +496,11 @@ int	main(int argc, char* argv[])
 		LoadDrivers();
 		fprintf(stdout, "Load complete\n");
 	}
-
-	UnloadDrivers();
-	fprintf(stdout, "Unload complete\n");
+	else
+	{
+		UnloadDrivers();
+		fprintf(stdout, "Unload complete\n");
+	}
 
 	return	0;
 }

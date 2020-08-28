@@ -20,7 +20,7 @@ How to use this utility (UL.EXE)
 If drivers were loaded by CONFIG.SYS this utility wan't find they.
 Please don't use SMARTDRV.EXE.
 
-This unload utility completely removes those drivers from DOS conventional memory.  
+This unload utility completely removes USBASPI.SYS & DI1000DD.SYS from DOS conventional memory.  
 Also removes allocated XMS handles, drive letters  
 and modifies drives quantity in DOS List of Lists (+20h) and in BIOS data area (+75h).  
 

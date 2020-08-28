@@ -17,7 +17,8 @@ How to use this utility (UL.EXE)
     `ul`  
 - now you can change USB flash drive and load drivers again  
 
-If drivers were loaded by CONFIG.SYS this utility wan't find they.  
+If drivers were loaded by CONFIG.SYS this utility wan't find they.
+Please don't use SMARTDRV.EXE.
 
 This unload utility completely removes those drivers from DOS conventional memory.  
 Also removes allocated XMS handles, drive letters  

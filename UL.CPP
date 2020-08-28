@@ -1,11 +1,17 @@
 #include <dos.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <io.h>
 #include <mem.h>
 #include <process.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys\stat.h>
 
 #include "utypes.h"
+
+WORD	wLolOff;
+WORD	wLolSeg;
 
 //-	Memory Control Block
 typedef	struct	tagMemCtrlBlk
@@ -70,24 +76,29 @@ typedef	struct	tagDevHdr
 typedef	TDH	FAR*	LPDH;
 
 //-	MS-DOS List Of Lists structure
+/*
 typedef	struct	tagLoL
 {
 	WORD	wSegMCB;
+//00
 	DWORD	dwDPB;
 	DWORD	dwFT1;
 	DWORD	dwClock;
 	DWORD	dwCon;
 	WORD	wMaxSectorSize;
 	DWORD	dwCacheHead;
+//16h
 	DWORD	dwCDS;
 	DWORD	dwFCB;
 	WORD	wFcbSize;
+//20h
 	BYTE	bDrvCnt;
 	BYTE	bLastDrv;
+//22h
 	TDH	tdhNul;
 }	TLoL;
 typedef	TLoL	FAR*	LPLoL;
-
+*/
 
 int	get_umb_link()
 {
@@ -108,10 +119,13 @@ EndSet:
 }
 
 
-WORD	SearchMCB(LPMCB curMCB, const char* aName)
+WORD	SearchMCB(const char* aName)
 {
 	WORD	wMCB;
+	LPMCB	curMCB;
 
+	wMCB	= *(LPWORD)MK_FP(wLolSeg, wLolOff - 2);
+	curMCB	= (LPMCB)MK_FP(wMCB, 0);
 	while(curMCB->bSig == 'M')
 	{
 		wMCB	= FP_SEG(curMCB);
@@ -143,18 +157,18 @@ WORD	SearchMCB(LPMCB curMCB, const char* aName)
 	return	0;
 }
 
-void	FreeMCB(WORD wMcbSeg)
+void	FreeMCB(WORD wMcb)
 {
 	LPMCB	pmcb;
 	LPMCB	pmcbn;
 	WORD	wNext;
 
-	pmcb	= (LPMCB)MK_FP(wMcbSeg, 0);
-	wNext	= wMcbSeg + pmcb->wSize + 1;
+	pmcb	= (LPMCB)MK_FP(wMcb, 0);
+	wNext	= wMcb + pmcb->wSize + 1;
 	pmcbn	= (LPMCB)MK_FP(wNext, 0);
 	if(pmcbn->wOwner == 0)
 	{
-		fprintf(stdout, " Unite MCB's %04X & %04X\n", wMcbSeg, wNext);
+		fprintf(stdout, " Unite MCB's %04X & %04X\n", wMcb, wNext);
 		pmcb->wSize	+= pmcbn->wSize + 1;
 		pmcb->bSig	= pmcbn->bSig;	//may be it is 'Z'
 		memset(pmcbn, 0, 16);
@@ -162,17 +176,17 @@ void	FreeMCB(WORD wMcbSeg)
 	pmcb->wOwner	= 0;
 }
 
-void	ParseDeviceDrivers(LPVOID pdl, WORD wTarget)
+void	ParseDeviceDrivers(WORD wTarget)
 {
 	WORD	wSeg;
-	TDH far* pDH;
-	TDH far* next;
+	LPDH	pDH;
+	LPDH	next;
 
-	pDH	= (TDH far*)pdl;
+	pDH	= (LPDH)MK_FP(wLolSeg, wLolOff + 0x22);
 
 //-	First driver is NUL
 GoNext:
-	next	= (TDH far*)pDH->dwNext;
+	next	= (LPDH)pDH->dwNext;
 	wSeg	= FP_SEG(next);
 
 	if(wSeg == wTarget)
@@ -224,7 +238,7 @@ void	LoadDrivers()
 	}
 }
 
-int	(*XMS)();
+int	(*XMS)() = NULL;
 
 int	InitXMS()
 {
@@ -251,13 +265,75 @@ XmsOK:
 	return	0;
 }
 
-void	FreeXmsHandles(WORD hx)
+int	RestoreInt(int num, WORD wPSP, WORD wOff, char* name)
+{
+	LPDWORD	lpDW;
+	LPDWORD	lpIT;
+	DWORD	dw;
+
+	lpDW	= (LPDWORD)MK_FP(wPSP, wOff);
+	fprintf(stdout, " Saved by %s int %02Xh at %04X:%04X = %08lX\n", name, num, wPSP, wOff, *lpDW);
+	if(*lpDW)
+	{
+		lpIT	= NULL;
+		dw	= lpIT[num];
+		fprintf(stdout, " Current int %02Xh = %08lX\n", num, dw);
+		if((WORD)(dw >> 16) == wPSP)
+		{
+			fprintf(stdout, " Restore int %02Xh\n", num);
+			asm	cli
+			lpIT[num]	= *lpDW;
+			asm	sti
+			fprintf(stdout, " Int %02Xh restoration complete.\n", num);
+
+			return	1;
+		}
+
+		fprintf(stdout, " Current int %02Xh dosn't match %s PSP", num, name);
+	}
+	else
+	{
+		fprintf(stdout, " %s dosn't replace int %02Xh", name, num);
+	}
+
+	fprintf(stdout, ". Skip restoration.\n");
+
+	return	0;
+}
+
+
+void	FreeXmsHandles(WORD wSeg, WORD wOff)
 {
 	int	c;
 //	WORD	wAX;
 	WORD	wBX;
 	WORD	wDX;
 	WORD	wLC;
+	WORD	hx;
+	LPDWORD	lpXR;
+
+	lpXR	= (LPDWORD)MK_FP(wSeg, wOff);
+	if(*lpXR)
+	{
+		fprintf(stdout, " Saved XMS driver at %04X = %08lX\n", wOff, *lpXR);
+		fprintf(stdout, " Looking for allocated EMB's ...\n");
+	}
+	else
+	{
+		fprintf(stdout, " XMS driver not set!\n");
+		return;
+	}
+
+	if(*lpXR == (DWORD)XMS)
+	{
+		wOff	+= 4;
+	}
+	else
+	{
+		fprintf(stdout, " XMS Routine not match! Can't free XMS handles!\n");
+		return;
+	}
+	hx	= *(LPWORD)MK_FP(wSeg, wOff);
 
 	c	= 2;
 	do
@@ -289,13 +365,13 @@ void	FreeXmsHandles(WORD hx)
 			else
 			{
 				wBX	= _BX;
-				fprintf(stdout, " Free handle error = %2.2X (handle = %4.4X)\n", wBX & 255, hx);
+				fprintf(stderr, " Free handle error = %2.2X (handle = %4.4X)\n", wBX & 255, hx);
 			}
 		}
 		else
 		{
 			wBX	= _BX;
-			fprintf(stdout, " Get handle information error = %2.2X (handle = %4.4X)\n", wBX & 255, hx);
+			fprintf(stderr, " Get handle information error = %2.2X (handle = %4.4X)\n", wBX & 255, hx);
 		}
 		hx	-=10;
 		c--;
@@ -316,25 +392,136 @@ WORD	mcb2psp(WORD wMCB)
 	return	((LPMCB)MK_FP(wMCB, 0))->wOwner;
 }
 
+void	UnloadDI1k(WORD wMCB)
+{
+	WORD	wPSP;
+	WORD	dc,i,j;
+	LPDH	lpDevHdr;
+	LPCDS	lpCurDir;	//Current Directory
+	LPDPB	lpDrvPrm;	//Drive Parameters
+	LPBYTE	lpDC;
+
+	wPSP	= mcb2psp(wMCB);
+//-	get number of devices controlled by DI1000DD.SYS
+	lpDevHdr	= (LPDH)MK_FP(wPSP, 0);
+	dc	= (WORD)lpDevHdr->abName[0];
+	fprintf(stdout, "DI1000DD MCB=%04X PSP=%04X NoD=%d\n", wMCB, wPSP, dc);
+
+//-	Restore interrupt vector 13h
+	if(RestoreInt(0x13, wPSP, 0x61, "DI1000DD"))
+	{
+
+//-		decrement number of drives in BIOS Data Area
+		*(LPBYTE)0x0475L	-= dc;
+
+//-		decrement number of drives in LoL
+		lpDC	= (LPBYTE)MK_FP(wLolSeg, wLolOff + 0x20);
+		fprintf(stdout, " DrvCnt before decrement = %d\n", *lpDC);// & 0xFF);
+		*lpDC	-= dc;
+		fprintf(stdout, " DrvCnt after  decrement = %d\n", *lpDC);// & 0xFF);
+
+//-		clear CDS's & DPB's
+		lpCurDir	= *(LPCDS*)MK_FP(wLolSeg, wLolOff + 0x16);
+		fprintf(stdout, " lpCurDir = %Fp\n", lpCurDir);
+		i	= *lpDC - 1;
+		lpDrvPrm	= (LPDPB)lpCurDir[i].dwDPB;
+		fprintf(stdout, " lpDrvPrm = %Fp\n", lpDrvPrm);
+		lpDrvPrm->dwNext	= 0x0000FFFFL;
+		j	= 0;
+		while(j < dc)
+		{
+			i++;
+			j++;
+			lpCurDir[i].wFlags	= 0;
+			lpCurDir[i].wClustNo	= 0;
+			lpCurDir[i].dwDPB	= 0L;
+			memset(lpCurDir[i].szPath + 3, 0, 64);
+		}
+	}
+	else
+	{
+		fprintf(stdout, " Also skip other disk drives operations.\n");
+	}
+
+//-	Walk through Device drivers
+	ParseDeviceDrivers(wPSP);
+
+//-	Release memory control block
+	FreeMCB(wMCB);
+}
+
+void	UnloadUA(WORD wMCB)
+{
+	WORD	wPSP;
+	WORD	wXMS;
+	WORD	w15h;
+	LPDWORD	lpDW;
+
+	wPSP	= mcb2psp(wMCB);
+	fprintf(stdout, "USBASPI  MCB=%04X PSP=%04X\n", wMCB, wPSP);
+
+	lpDW	= (LPDWORD)MK_FP(wPSP, 6);
+	if(*lpDW == 0x0066005BL)
+	{
+		lpDW	= (LPDWORD)MK_FP(wPSP, 6);
+		if(*lpDW == 0x0066005BL)
+		{
+			lpDW	= (LPDWORD)MK_FP(wPSP, 0x77);
+			switch(*lpDW)
+			{
+			case 0x3D48840FL:	//v2.20
+			case 0x3E00840FL:	//v2.24
+				wXMS	= 0x029A;
+				w15h	= 0x035F;
+				break;
+			case 0x3E63840FL:	//v2.27
+				wXMS	= 0x0298;
+				w15h	= 0x035D;
+				break;
+			case 0x3983840FL:	//v2.27x
+				wXMS	= 0x025A;
+				w15h	= 0x031E;
+				break;
+			default:
+				fprintf(stderr, " Unknown USBASPI version (%d). Skip unload!\n", 2);
+				return;
+			}
+		}
+	}
+	else
+	{
+		fprintf(stderr, " Unknown USBASPI version (%d). Skip unload!\n", 1);
+		return;
+	}
+
+//-	Free allocated EMB's
+	FreeXmsHandles(wPSP, wXMS);
+
+//-	Restore interrupt vector 15h
+	RestoreInt(0x15, wPSP, w15h, "USBASPI");
+
+//-	Walk through Device drivers
+	ParseDeviceDrivers(wPSP);
+
+//-	Release memory control block
+	FreeMCB(wMCB);
+}
+
 void	UnloadDrivers()
 {
 	int	cul;
-	WORD	dc,i,j;
-	WORD	wLolOff;
-	WORD	wLolSeg;
+//	WORD	wLolOff;
+//	WORD	wLolSeg;
 	WORD	wDrvMCB;
-	WORD	wDrvPSP;
-	LPDWORD	lpIT;
-	LPDWORD	lp13;
-	LPLoL	lpMain;
-	LPMCB	lpMcbList;
-	LPCDS	lpCurDir;	//Current Directory
-	LPDPB	lpDrvPrm;	//Drive Parameters
-	LPDH	lpDevHdr;
+//	LPLoL	lpMain;
+//	LPMCB	lpMcbList;
 
 //0	Backup & set UMB link state
-	cul	= get_umb_link();
-	set_umb_link(1);
+	if(XMS)
+	{
+		cul	= get_umb_link();
+		set_umb_link(1);
+	}
 
 //1	Get LoL
 	asm	push	es
@@ -345,128 +532,55 @@ void	UnloadDrivers()
 	wLolSeg	= _ES;
 	asm	pop	bx
 	asm	pop	es
-	lpMain	= (LPLoL)MK_FP(wLolSeg, wLolOff - 2);
-	lpMcbList	= (LPMCB)MK_FP(lpMain->wSegMCB, 0);
+//	lpMain	= (LPLoL)MK_FP(wLolSeg, wLolOff - 2);
+//	lpMcbList	= (LPMCB)MK_FP(lpMain->wSegMCB, 0);
 
 //2	Search DI1000DD
-	wDrvMCB	= SearchMCB(lpMcbList, "DI1000DD");
+	wDrvMCB	= SearchMCB("DI1000DD");
 
 //3	Unload DI1000DD.SYS
 	if(wDrvMCB && wDrvMCB != 0xFFFF)
 	{
-//-		get number of devices controlled by DI1000DD.SYS
-		wDrvPSP	= mcb2psp(wDrvMCB);
-		lpDevHdr	= (LPDH)MK_FP(wDrvPSP, 0);
-		dc	= (WORD)lpDevHdr->abName[0];
-		fprintf(stdout, "DI1000DD MCB=%04X PSP=%04X NoD=%d\n", wDrvMCB, wDrvPSP, dc);
-
-//-		decrement number of drives in BIOS Data Area
-		*(LPBYTE)0x0475L	-= dc;
-
-//-		restore Int 13h
-		lpIT	= NULL;
-		lp13	= (LPDWORD)MK_FP(wDrvPSP, 0x61);
-		asm	cli
-		lpIT[0x13]	= *lp13;
-		asm	sti
-
-//-		decrement number of drives in LoL
-		fprintf(stdout, " DrvCnt before decrement = %d\n", lpMain->bDrvCnt & 0xFF);
-		lpMain->bDrvCnt	-= dc;
-		fprintf(stdout, " DrvCnt after  decrement = %d\n", lpMain->bDrvCnt & 0xFF);
-
-//-		clear CDS's & DPB's
-		lpCurDir	= (LPCDS)lpMain->dwCDS;
-		i	= lpMain->bDrvCnt - 1;
-		lpDrvPrm	= (LPDPB)lpCurDir[i].dwDPB;
-		lpDrvPrm->dwNext	= 0x0000FFFFL;
-		j	= 0;
-		while(j < dc)
-		{
-			i++;
-			j++;
-			lpCurDir[i].wFlags	= 0;
-			lpCurDir[i].wClustNo	= 0;
-			lpCurDir[i].dwDPB	= 0L;
-		}
-
-//-		Walk through Device drivers
-		ParseDeviceDrivers(MK_FP(wLolSeg, wLolOff + 0x22), wDrvPSP);
-
-//-		Release memory control block
-		FreeMCB(wDrvMCB);
+		UnloadDI1k(wDrvMCB);
 	}
 	else
 	{
-		fprintf(stdout, "DI1000DD not found!\n");
+		fprintf(stderr, "%s not found!\n", "DI1000DD");
 	}
 
 //4	Search USBASPI
-	wDrvMCB	= SearchMCB(lpMcbList, "USBASPI");
+	wDrvMCB	= SearchMCB("USBASPI");
 
 //5	Unload USBASPI.SYS
 	if(wDrvMCB && wDrvMCB != 0xFFFF)
 	{
-		wDrvPSP	= mcb2psp(wDrvMCB);
-		fprintf(stdout, "USBASPI  MCB=%04X PSP=%04X\n", wDrvMCB, wDrvPSP);
-
-//-		Walk through Device drivers
-		ParseDeviceDrivers(MK_FP(wLolSeg, wLolOff + 0x22), wDrvPSP);
-
-		if(InitXMS())
-		{
-			fprintf(stderr, "XMS not found!\n");
-		}
-		else
-		{
-			i	= 0;
-//-			Check 2.27x
-			lpIT	= (LPDWORD)MK_FP(wDrvPSP, 0x025A);
-			if(*lpIT == (DWORD)XMS)
-			{
-				i	= 0x25E;
-			}
-			else
-			{
-//-				Check 2.27
-				lpIT	= (LPDWORD)MK_FP(wDrvPSP, 0x0298);
-				if(*lpIT == (DWORD)XMS)
-				{
-					i	= 0x29C;
-				}
-				else
-				{
-//-					Check 2.20
-					lpIT	= (LPDWORD)MK_FP(wDrvPSP, 0x029A);
-					if(*lpIT == (DWORD)XMS)
-					{
-						i	= 0x29E;
-					}
-				}
-			}
-
-			if(i)
-			{
-				j	= *(LPWORD)MK_FP(wDrvPSP, i);
-				fprintf(stdout, " XMS handle found at %4.4X = %4.4X!\n", i, j);
-				FreeXmsHandles(j);
-			}
-			else
-			{
-				fprintf(stdout, " Unknown USBASPI version. Can't free XMS handles!\n");
-			}
-		}
-
-//-		Release memory control block
-		FreeMCB(wDrvMCB);
+		UnloadUA(wDrvMCB);
 	}
 	else
 	{
-		fprintf(stdout, "USBASPI not found!\n");
+		fprintf(stderr, "%s not found!\n", "USBASPI");
 	}
 
 //6	Restore UMB link state
-	set_umb_link(cul);
+	if(XMS)
+	{
+		set_umb_link(cul);
+	}
+}
+
+void	Dump1M(char* fn)
+{
+	int	fh	= open(fn, O_BINARY | O_CREAT | O_TRUNC, S_IREAD | S_IWRITE);
+
+	WORD	i	= 0;
+	do
+	{
+		write(fh, MK_FP(i << 8, 0), 4096);
+		i++;
+	}
+	while(i < 256);
+
+	close(fh);
 }
 
 int	main(int argc, char* argv[])
@@ -483,12 +597,27 @@ int	main(int argc, char* argv[])
 		while(i < argc)
 		{
 			parg	= strupr(argv[i]);
-			if(!strcmp(parg, "-L"))
+			if(!strcmp(parg, "-L"))	//load drivers
 			{
 				opt	|= 1;
 			}
+			else
+			if(!strcmp(parg, "-D"))	//dump
+			{
+				opt	|= 2;
+			}
 			i++;
 		}
+	}
+
+	if(InitXMS())
+	{
+		fprintf(stderr, "%s not found!\n", "XMS");
+	}
+
+	if(opt & 2)
+	{
+		Dump1M("0.BIN");
 	}
 
 	if(opt & 1)
@@ -500,6 +629,11 @@ int	main(int argc, char* argv[])
 	{
 		UnloadDrivers();
 		fprintf(stdout, "Unload complete\n");
+	}
+
+	if(opt & 2)
+	{
+		Dump1M("1.BIN");
 	}
 
 	return	0;

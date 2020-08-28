@@ -23,7 +23,5 @@ This unload utility completely removes those drivers from DOS conventional memor
 Also removes allocated XMS handles, drive letters  
 and modifies drives quantity in DOS List of Lists (+20h) and in BIOS data area (+75h).  
 
-Tested with USBASPI versions 2.20, 2.27 (Panasonic) and 2.27x (YAYA DIY 2010/09/16) with /e option (EHCI mode).  
-Other conditions:  
- DEVLOAD version 3.25  
- JEMMEX version 5.78  
+Tested with USBASPI versions 2.20, 2.24, 2.27 (Panasonic) and 2.27x (YAYA DIY 2010/09/16) with /e option (EHCI mode);
+Free DOS, DEVLOAD v3.25, JEMMEX v5.78 (now not neccessary).
